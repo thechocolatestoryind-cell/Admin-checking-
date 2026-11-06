@@ -1,0 +1,63 @@
+// Single description of every admin page: navigation, headings and (for Stage 1) placeholder info.
+export const GROUPS = [
+  { id: "overview", label: "Overview" },
+  { id: "catalogue", label: "Catalogue" },
+  { id: "sales", label: "Sales" },
+  { id: "storefront", label: "Storefront" },
+  { id: "store", label: "Store" }
+];
+
+const RO = "Read-only in the browser under current rules.";
+export const PAGES = {
+  dashboard: { file: "dashboard.html", title: "Dashboard", group: "overview", stage: 4, icon: "home",
+    blurb: "Summaries of orders, stock, reviews and requests as of the last refresh.", collections: [] },
+  products: { file: "products.html", title: "Products", group: "catalogue", stage: 2, icon: "box",
+    blurb: "Product list, search, filters, stock and availability.",
+    collections: [["products", "Admin can read, create, update and delete."]],
+    limits: ["Stock changes made here are not safe against simultaneous checkouts; secure stock handling needs a trusted backend."] },
+  "product-edit": { file: "product-edit.html", title: "Product editor", group: "catalogue", stage: 2, icon: "box", parent: "products",
+    blurb: "Create or edit a product, its images and its options.",
+    collections: [["products", "Admin can read, create, update and delete."]], limits: [] },
+  categories: { file: "categories.html", title: "Categories", group: "catalogue", stage: 2, icon: "tag",
+    blurb: "Category names, images, order and visibility.",
+    collections: [["categories", "Admin can read, create, update and delete."], ["products", "Checked before a category is deleted."]], limits: [] },
+  orders: { file: "orders.html", title: "Orders", group: "sales", stage: 3, icon: "cart",
+    blurb: "Approve paid orders, mark them shipped and delivered, all by hand.",
+    collections: [["orders", "Admin can read. Updates limited to status, paymentStatus (pending to verified, only when approving), updatedAt and adminNote along valid transitions."]],
+    limits: ["Orders cannot be created or deleted from the browser.", "Prices, payment fields and addresses cannot be changed."] },
+  "order-detail": { file: "order-detail.html", title: "Order detail", group: "sales", stage: 3, icon: "cart", parent: "orders",
+    blurb: "Items, address, payment and shipment for one order.",
+    collections: [["orders", "As above."], ["shipments", "Related tracking record."], ["paymentTransactions", RO]], limits: [] },
+  shipments: { file: "shipments.html", title: "Shipments", group: "sales", stage: 3, icon: "truck",
+    blurb: "Manual DTDC-friendly tracking entry.",
+    collections: [["shipments", "Admin can read, create, update and delete."]],
+    limits: ["No courier API is connected. Tracking details are whatever you type."] },
+  payments: { file: "payments.html", title: "Payments", group: "sales", stage: 3, icon: "card",
+    blurb: "Manual UPI payments waiting for your verification, verified payments and older records.",
+    collections: [["paymentTransactions", RO]],
+    limits: ["Payments are verified by you in your bank/UPI app. There is no payment gateway and no automatic confirmation."] },
+  customers: { file: "customers.html", title: "Customers", group: "sales", stage: 3, icon: "users",
+    blurb: "Customer profiles, saved addresses and order history.",
+    collections: [["users", "Admin can read and list."], ["users/{uid}/addresses", "Admin can read."], ["orders", "Filtered by userId."]], limits: [] },
+  "custom-orders": { file: "custom-orders.html", title: "Custom requests", group: "sales", stage: 4, icon: "pencil",
+    blurb: "Bespoke order requests, notes and status.",
+    collections: [["customOrderRequests", "Admin can read, update and delete."]],
+    limits: ["Opening WhatsApp or Instagram is a manual action; the app cannot send messages."] },
+  reviews: { file: "reviews.html", title: "Reviews", group: "storefront", stage: 4, icon: "star",
+    blurb: "Approve or reject customer reviews.",
+    collections: [["reviews", "Admin can read, create, update and delete."]],
+    limits: ["Reviews use a single isApproved flag, so \u201Crejected\u201D and \u201Cpending\u201D cannot be told apart without a schema change."] },
+  content: { file: "content.html", title: "Banners & highlights", group: "storefront", stage: 4, icon: "image",
+    blurb: "Homepage banners, circular highlights and their slides.",
+    collections: [["banners", "Admin manages all."], ["highlights", "Admin manages all."], ["highlightItems", "Admin manages all."]], limits: [] },
+  "activity-logs": { file: "activity-logs.html", title: "Activity log", group: "store", stage: 4, icon: "list",
+    blurb: "Existing admin activity records.",
+    collections: [["adminActivityLogs", RO]],
+    limits: ["The browser cannot write log entries. Reliable audit logging needs a trusted backend."] },
+  settings: { file: "settings.html", title: "Store settings", group: "store", stage: 4, icon: "sliders",
+    blurb: "Contact details, announcement and maintenance mode.",
+    collections: [["siteSettings/public", "Admin can read and write."]],
+    limits: ["Delivery estimate (6\u20138 days) is an app default until a shared settings field is agreed."] }
+};
+export const PAGE_FILES = Object.values(PAGES).map(p => p.file).concat(["dashboard.html"]);
+export const NAV_ORDER = Object.keys(PAGES).filter(k => !PAGES[k].parent);
