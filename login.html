@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#2D1910">
+<title>Sign in – Chocolate Story Admin</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="assets/favicon-48.png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<main class="center-page">
+  <section class="login-card" aria-labelledby="login-title">
+    <img class="login-logo" src="assets/logo.jpg" alt="The Chocolate Story" width="1536" height="1024">
+    <h1 id="login-title">Admin panel</h1>
+    <p class="muted">Sign in with the owner's Google account to manage orders, products and content.</p>
+    <div id="state-loading" role="status">Checking sign-in…</div>
+    <div id="state-signed-out" hidden><button id="btn-signin" class="btn" type="button">Sign in with Google</button></div>
+    <div id="state-denied" hidden>
+      <h2>Access denied</h2>
+      <p id="denied-text"></p>
+      <p id="denied-account" class="muted small wrap"></p>
+      <button id="btn-signout" class="btn btn-quiet" type="button">Sign out and try another account</button>
+    </div>
+    <p id="login-error" class="login-error" role="alert" hidden></p>
+    <p class="notice">Only the owner's account can open this panel. Store data stays protected by Firebase security rules.</p>
+  </section>
+</main>
+<noscript><p style="padding:1rem">This admin panel needs JavaScript.</p></noscript>
+<script type="module" src="js/login.js"></script>
+</body>
+</html>
