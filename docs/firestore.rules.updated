@@ -1,0 +1,286 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Google sign-in is required for private/customer data.
+    function isGoogleUser() {
+      return request.auth != null
+        && request.auth.token.email is string
+        && request.auth.token.email_verified == true
+        && request.auth.token.firebase.sign_in_provider == 'google.com';
+    }
+
+    // Only this verified Google account is the admin.
+    function isAdmin() {
+      return isGoogleUser()
+        && request.auth.token.email == 'thechocolatestory.ind@gmail.com';
+    }
+
+    function isOwner(userId) {
+      return isGoogleUser() && request.auth.uid == userId;
+    }
+
+    function changedOnly(allowedFields) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(allowedFields);
+    }
+
+    function validOrderTransition(oldStatus, newStatus) {
+      return (oldStatus == 'pending'
+          && newStatus in ['pending', 'confirmed', 'cancelled'])
+        || (oldStatus == 'confirmed'
+          && newStatus in ['confirmed', 'processing', 'shipped', 'cancelled'])
+        || (oldStatus == 'processing'
+          && newStatus in ['processing', 'shipped', 'cancelled'])
+        || (oldStatus == 'shipped'
+          && newStatus in ['shipped', 'delivered'])
+        || (oldStatus == 'delivered' && newStatus == 'delivered')
+        || (oldStatus == 'cancelled' && newStatus == 'cancelled');
+    }
+
+    // Manual UPI workflow: the admin may change paymentStatus ONLY from 'pending' to 'verified',
+    // and only in the same write that approves the order (pending -> confirmed). Otherwise it must stay unchanged.
+    function validPaymentStatusChange() {
+      return request.resource.data.get('paymentStatus', null) == resource.data.get('paymentStatus', null)
+        || (resource.data.status == 'pending'
+          && request.resource.data.status == 'confirmed'
+          && resource.data.get('paymentStatus', null) == 'pending'
+          && request.resource.data.paymentStatus == 'verified');
+    }
+
+    function validDefaultAddress(userId) {
+      return request.resource.data.defaultAddressId == ''
+        || exists(/databases/$(database)/documents/users/$(userId)/addresses/$(request.resource.data.defaultAddressId));
+    }
+
+    // 1. USERS — each customer can access their own profile only.
+    match /users/{userId} {
+      allow get: if isAdmin() || isOwner(userId);
+      allow list: if isAdmin();
+
+      allow create: if isOwner(userId)
+        && request.resource.data.keys().hasOnly([
+          'isActive', 'displayName', 'photoURL', 'updatedAt',
+          'phoneNumber', 'email', 'defaultAddressId', 'createdAt'
+        ])
+        && request.resource.data.keys().hasAll([
+          'isActive', 'displayName', 'photoURL', 'updatedAt',
+          'phoneNumber', 'email', 'defaultAddressId', 'createdAt'
+        ])
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.isActive == true
+        && request.resource.data.displayName is string
+        && request.resource.data.photoURL is string
+        && request.resource.data.phoneNumber is string
+        && request.resource.data.defaultAddressId == ''
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+
+      allow update: if isAdmin()
+        || (isOwner(userId)
+          && changedOnly(['displayName', 'photoURL', 'phoneNumber', 'defaultAddressId', 'updatedAt'])
+          && request.resource.data.email == resource.data.email
+          && request.resource.data.isActive == resource.data.isActive
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.displayName is string
+          && request.resource.data.photoURL is string
+          && request.resource.data.phoneNumber is string
+          && request.resource.data.updatedAt == request.time
+          && validDefaultAddress(userId));
+
+      // Prefer disabling a profile via isActive rather than deleting it.
+      allow delete: if false;
+
+      // Saved addresses: users can manage their own; admin can view when needed.
+      match /addresses/{addressId} {
+        function validAddress() {
+          return request.resource.data.keys().hasOnly([
+              'fullName', 'phone', 'addressLine1', 'addressLine2',
+              'landmark', 'city', 'state', 'pincode', 'country',
+              'isDefault', 'createdAt', 'updatedAt'
+            ])
+            && request.resource.data.keys().hasAll([
+              'fullName', 'phone', 'addressLine1', 'addressLine2',
+              'landmark', 'city', 'state', 'pincode', 'country',
+              'isDefault', 'createdAt', 'updatedAt'
+            ])
+            && request.resource.data.fullName is string
+            && request.resource.data.phone is string
+            && request.resource.data.addressLine1 is string
+            && request.resource.data.addressLine2 is string
+            && request.resource.data.landmark is string
+            && request.resource.data.city is string
+            && request.resource.data.state is string
+            && request.resource.data.pincode is string
+            && request.resource.data.pincode.matches('^[0-9]{6}$')
+            && request.resource.data.country == 'India'
+            && request.resource.data.isDefault is bool
+            && request.resource.data.createdAt is timestamp
+            && request.resource.data.updatedAt is timestamp;
+        }
+
+        allow get, list: if isAdmin() || isOwner(userId);
+        allow create: if isOwner(userId)
+          && validAddress()
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.updatedAt == request.time;
+        allow update: if isOwner(userId)
+          && validAddress()
+          && changedOnly([
+            'fullName', 'phone', 'addressLine1', 'addressLine2',
+            'landmark', 'city', 'state', 'pincode', 'country',
+            'isDefault', 'updatedAt'
+          ])
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.updatedAt == request.time;
+        allow delete: if isOwner(userId);
+      }
+    }
+
+    // 2. PRODUCTS — public can read active products; admin manages all products.
+    match /products/{productId} {
+      allow get, list: if isAdmin() || resource.data.isActive == true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // 3. CATEGORIES — public sees active categories only.
+    match /categories/{categoryId} {
+      allow get, list: if isAdmin() || resource.data.isActive == true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // 4. ORDERS — customer reads their own. Creation/payment confirmation must use trusted backend.
+    match /orders/{orderId} {
+      allow get, list: if isAdmin()
+        || (isGoogleUser() && resource.data.userId == request.auth.uid);
+
+      // Do not allow browser/app clients to create, delete, or alter prices/payment fields.
+      allow create, delete: if false;
+      allow update: if isAdmin()
+        && changedOnly(['status', 'paymentStatus', 'updatedAt', 'adminNote'])
+        && request.resource.data.updatedAt == request.time
+        && validOrderTransition(resource.data.status, request.resource.data.status)
+        && validPaymentStatusChange();
+    }
+
+    // 5. REVIEWS — public sees approved reviews only. Submission/verification should use backend.
+    match /reviews/{reviewId} {
+      allow get, list: if isAdmin()
+        || resource.data.isApproved == true
+        || (isGoogleUser() && resource.data.userId == request.auth.uid);
+      allow create, update, delete: if isAdmin();
+    }
+
+    // 6. WISHLISTS — each Google user manages only their own wishlist document.
+    match /wishlists/{wishlistId} {
+      allow get, list: if isAdmin()
+        || (isGoogleUser() && resource.data.userId == request.auth.uid);
+
+      allow create: if isGoogleUser()
+        && request.resource.data.keys().hasOnly(['userId', 'productIds', 'createdAt', 'updatedAt'])
+        && request.resource.data.keys().hasAll(['userId', 'productIds', 'createdAt', 'updatedAt'])
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.productIds is list
+        && request.resource.data.productIds.size() <= 100
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+
+      allow update: if isGoogleUser()
+        && resource.data.userId == request.auth.uid
+        && changedOnly(['productIds', 'updatedAt'])
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.productIds is list
+        && request.resource.data.productIds.size() <= 100
+        && request.resource.data.updatedAt == request.time;
+
+      allow delete: if isGoogleUser() && resource.data.userId == request.auth.uid;
+    }
+
+    // 7. SITE SETTINGS — only the public document is readable without admin access.
+    // Never store Razorpay secret keys or private credentials in this document.
+    match /siteSettings/{settingId} {
+      allow get: if isAdmin() || settingId == 'public';
+      allow list: if isAdmin();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // 8. BANNERS — public sees active banners; admin manages all banners.
+    match /banners/{bannerId} {
+      allow get, list: if isAdmin() || resource.data.isActive == true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // 9. HIGHLIGHTS — public sees active highlights.
+    match /highlights/{highlightId} {
+      allow get, list: if isAdmin() || resource.data.isActive == true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // 10. HIGHLIGHT ITEMS — public sees active slides; admin manages all slides.
+    match /highlightItems/{itemId} {
+      allow get, list: if isAdmin() || resource.data.isActive == true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // 11. PAYMENT TRANSACTIONS — customer can read their own; only trusted backend writes.
+    match /paymentTransactions/{transactionId} {
+      allow get, list: if isAdmin()
+        || (isGoogleUser() && resource.data.userId == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
+    // 12. SHIPMENTS — customer can read their own tracking info; admin manages shipment records.
+    match /shipments/{shipmentId} {
+      allow get, list: if isAdmin()
+        || (isGoogleUser() && resource.data.userId == request.auth.uid);
+      allow create, update, delete: if isAdmin();
+    }
+
+    // 13. CUSTOM ORDER REQUESTS — authenticated Google customers submit/read their own requests.
+    match /customOrderRequests/{requestId} {
+      allow get, list: if isAdmin()
+        || (isGoogleUser() && resource.data.userId == request.auth.uid);
+
+      allow create: if isGoogleUser()
+        && request.resource.data.keys().hasOnly([
+          'customerName', 'phoneNumber', 'contactMethod', 'userId',
+          'updatedAt', 'productDescription', 'adminNote', 'status',
+          'requestedDate', 'budget', 'referenceImageURLs', 'createdAt'
+        ])
+        && request.resource.data.keys().hasAll([
+          'customerName', 'phoneNumber', 'contactMethod', 'userId',
+          'updatedAt', 'productDescription', 'adminNote', 'status',
+          'requestedDate', 'budget', 'referenceImageURLs', 'createdAt'
+        ])
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.customerName is string
+        && request.resource.data.phoneNumber is string
+        && request.resource.data.contactMethod in ['whatsapp', 'instagram', 'phone']
+        && request.resource.data.productDescription is string
+        && request.resource.data.productDescription.size() <= 3000
+        && request.resource.data.adminNote == ''
+        && request.resource.data.status == 'new'
+        && request.resource.data.requestedDate is timestamp
+        && request.resource.data.budget is number
+        && request.resource.data.budget >= 0
+        && request.resource.data.referenceImageURLs is list
+        && request.resource.data.referenceImageURLs.size() <= 5
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+
+      allow update, delete: if isAdmin();
+    }
+
+    // 14. ADMIN ACTIVITY LOGS — private; write from trusted backend only.
+    match /adminActivityLogs/{logId} {
+      allow get, list: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    // Any collection/path not explicitly allowed above is denied.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

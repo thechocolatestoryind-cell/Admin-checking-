@@ -1,0 +1,35 @@
+--- firestore.rules (current)
++++ firestore.rules.updated
+@@ -30,5 +30,5 @@
+           && newStatus in ['pending', 'confirmed', 'cancelled'])
+         || (oldStatus == 'confirmed'
+-          && newStatus in ['confirmed', 'processing', 'cancelled'])
++          && newStatus in ['confirmed', 'processing', 'shipped', 'cancelled'])
+         || (oldStatus == 'processing'
+           && newStatus in ['processing', 'shipped', 'cancelled'])
+@@ -37,4 +37,14 @@
+         || (oldStatus == 'delivered' && newStatus == 'delivered')
+         || (oldStatus == 'cancelled' && newStatus == 'cancelled');
++    }
++
++    // Manual UPI workflow: the admin may change paymentStatus ONLY from 'pending' to 'verified',
++    // and only in the same write that approves the order (pending -> confirmed). Otherwise it must stay unchanged.
++    function validPaymentStatusChange() {
++      return request.resource.data.get('paymentStatus', null) == resource.data.get('paymentStatus', null)
++        || (resource.data.status == 'pending'
++          && request.resource.data.status == 'confirmed'
++          && resource.data.get('paymentStatus', null) == 'pending'
++          && request.resource.data.paymentStatus == 'verified');
+     }
+ 
+@@ -148,7 +158,8 @@
+       allow create, delete: if false;
+       allow update: if isAdmin()
+-        && changedOnly(['status', 'updatedAt', 'adminNote'])
++        && changedOnly(['status', 'paymentStatus', 'updatedAt', 'adminNote'])
+         && request.resource.data.updatedAt == request.time
+-        && validOrderTransition(resource.data.status, request.resource.data.status);
++        && validOrderTransition(resource.data.status, request.resource.data.status)
++        && validPaymentStatusChange();
+     }
+ 
