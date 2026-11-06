@@ -1,0 +1,45 @@
+import assert from "node:assert/strict";
+const { store } = await import("./stubs/firestore.js");
+const O = await import("../js/services/orders.js"), S = await import("../js/services/shipments.js"), Pay = await import("../js/services/payments.js"), Us = await import("../js/services/users.js");
+const L = await import("../js/services/order-logic.js"), K = await import("../js/collections.js");
+let pass = 0; const t = async (n, fn) => { try { await fn(); pass++; console.log("ok  ", n); } catch (e) { console.log("FAIL", n, "\n    ", e.message); process.exitCode = 1; } };
+
+await t("nextStatuses mirrors rules (never offers same/backward/after-ship cancel)", () => {
+  assert.deepEqual(L.nextStatuses("pending"), ["confirmed", "cancelled"]); assert.deepEqual(L.nextStatuses("shipped"), ["delivered"]);
+  assert.ok(!L.nextStatuses("shipped").includes("cancelled")); assert.deepEqual(L.nextStatuses("delivered"), []); assert.deepEqual(L.nextStatuses("cancelled"), []); assert.deepEqual(L.nextStatuses("weird"), []); });
+store.data.orders = { o1: { orderNumber: "TCS-1", status: "pending", userId: "u1", totalAmount: 679, customerName: "Rahul Sharma", paymentStatus: "pending", createdAt: new Date("2026-10-19T11:29:00Z"), subtotal: 599 } };
+await t("status update writes only status+updatedAt", async () => { const o = await O.getOrder("o1"); store.writes.length = 0; const patch = await O.updateOrder(o, { status: "confirmed" });
+  assert.deepEqual(Object.keys(patch).sort(), ["status", "updatedAt"]); const d = store.data.orders.o1; assert.equal(d.status, "confirmed"); assert.equal(d.totalAmount, 679); assert.equal(d.subtotal, 599); assert.equal(d.userId, "u1"); });
+await t("invalid transition is refused before any write", async () => { const o = await O.getOrder("o1"); store.writes.length = 0;
+  await assert.rejects(() => O.updateOrder(o, { status: "delivered" }), e => e.code === "app/invalid-transition"); await assert.rejects(() => O.updateOrder(o, { status: "pending" }), e => e.code === "app/invalid-transition"); assert.equal(store.writes.length, 0); });
+await t("note-only update keeps status, only adminNote+updatedAt", async () => { const o = await O.getOrder("o1"); const p = await O.updateOrder(o, { adminNote: "Call before delivery" });
+  assert.deepEqual(Object.keys(p).sort(), ["adminNote", "updatedAt"]); assert.equal(store.data.orders.o1.status, "confirmed"); });
+await t("all keys written are rule-writable", async () => { const o = await O.getOrder("o1"); const p = await O.updateOrder(o, { status: "cancelled", adminNote: "x" }); assert.ok(Object.keys(p).every(k => K.ORDER_ADMIN_WRITABLE.includes(k))); });
+await t("shipped order cannot be cancelled", async () => { const o = { id: "o1", status: "shipped" }; await assert.rejects(() => O.updateOrder(o, { status: "cancelled" }), e => e.code === "app/invalid-transition"); });
+await t("order filters + search", () => { const o = { orderNumber: "TCS-2026-0001", customerName: "Rahul Sharma", customerPhone: "", shippingAddress: { phone: "9876543210" }, status: "pending", paymentStatus: "pending", createdAt: new Date("2026-10-19T11:29:00Z") };
+  assert.ok(L.orderMatches(o, { text: "0001" })); assert.ok(L.orderMatches(o, { text: "98765" })); assert.ok(!L.orderMatches(o, { text: "nobody" })); assert.ok(!L.orderMatches(o, { status: "shipped" }));
+  assert.ok(L.orderMatches(o, { from: "2026-10-19", to: "2026-10-19" })); assert.ok(!L.orderMatches(o, { from: "2026-10-20" })); assert.ok(!L.orderMatches(o, { to: "2026-10-18" })); });
+await t("IST day boundary", () => { assert.equal(L.istDateString(new Date("2026-10-18T18:30:00Z")), "2026-10-19"); assert.equal(L.dateFromIstString("2026-10-19").toISOString(), "2026-10-18T18:30:00.000Z"); assert.equal(L.dateFromIstString("2026-13-40"), null); });
+await t("whatsapp digits", () => { assert.equal(L.whatsappDigits("98765 43210"), "919876543210"); assert.equal(L.whatsappDigits("+91 88470 50895"), "918847050895"); assert.equal(L.whatsappDigits("123"), ""); });
+await t("describeItem handles unknown shapes", () => { const d = L.describeItem({ name: "Cake", quantity: 2, price: 599, selectedOptions: [{ name: "Size", value: "1kg" }], note: "x" });
+  assert.equal(d.line, 1198); assert.deepEqual(d.options, ["Size: 1kg"]); assert.match(d.extra, /note/); assert.equal(L.describeItem("odd").name, "odd"); });
+
+const ok = () => ({ orderId: "o1", userId: "u1", courierName: "DTDC", trackingNumber: "", trackingURL: "", status: "pending", estimatedDeliveryDate: "", shippedAt: "", deliveredAt: "", delayReason: "" });
+await t("shipment validation", () => { assert.deepEqual(L.validateShipment(ok()).errors, []);
+  const e = v => L.validateShipment({ ...ok(), ...v }).errors.map(x => x.field);
+  assert.deepEqual(e({ status: "shipped" }), ["shippedAt"]); assert.deepEqual(e({ status: "delivered", shippedAt: "2026-10-20" }), ["deliveredAt"]);
+  assert.deepEqual(e({ status: "delivered", shippedAt: "2026-10-20", deliveredAt: "2026-10-19" }), ["deliveredAt"]); assert.deepEqual(e({ trackingURL: "javascript:alert(1)" }), ["trackingURL"]);
+  assert.deepEqual(e({ trackingURL: "not a url" }), ["trackingURL"]); assert.deepEqual(e({ deliveredAt: "2026-10-20" }), ["deliveredAt"]); assert.deepEqual(e({ orderId: "" }), ["orderId"]); assert.deepEqual(e({ status: "teleported" }), ["status"]);
+  assert.equal(L.validateShipment({ ...ok(), trackingURL: "https://www.dtdc.in/track?x=1" }).data.trackingURL, "https://www.dtdc.in/track?x=1"); });
+await t("shipment CRUD + data shape (no invented tracking)", async () => { const { data } = L.validateShipment({ ...ok(), status: "shipped", shippedAt: "2026-10-20" });
+  const id = await S.createShipment(data); const d = store.data.shipments[id]; assert.equal(d.trackingNumber, ""); assert.equal(d.createdAt, "TS"); assert.equal(d.courierName, "DTDC");
+  await S.updateShipment(id, { trackingNumber: "D123" }); assert.equal(store.data.shipments[id].trackingNumber, "D123"); assert.equal((await S.shipmentsForOrder("o1")).length, 1);
+  await S.deleteShipment(id); assert.equal((await S.shipmentsForOrder("o1")).length, 0); });
+await t("shipment/order warnings are advisory only", () => { assert.ok(L.shipmentWarnings({ status: "shipped" }, []).length === 1); assert.ok(L.shipmentWarnings({ status: "pending" }, [{ status: "shipped" }]).length === 1);
+  assert.deepEqual(L.shipmentWarnings({ status: "processing" }, [{ status: "pending" }]), []); assert.ok(L.shipmentWarnings({ status: "cancelled" }, [{ status: "pending" }]).length === 1); });
+await t("pending shipment with dates is flagged without an order", () => { assert.equal(L.shipmentWarnings(null, [{ status: "pending", shippedAt: "2026-10-18T18:30:00Z" }]).length, 1); });
+await t("payments + users services are read-only", async () => { const ex = Object.keys(Pay).concat(Object.keys(Us)); assert.ok(!ex.some(k => /^(create|update|delete|set|save|write)/i.test(k)), ex.join()); });
+await t("users, nested addresses and order history by userId", async () => { store.data.users = { u1: { displayName: "A", createdAt: new Date() } }; store.data["users/u1/addresses"] = { a1: { city: "Kolkata" } };
+  assert.equal((await Us.getUser("u1")).displayName, "A"); assert.equal(await Us.getUser("zzz"), null); assert.equal((await Us.addressesFor("u1"))[0].city, "Kolkata"); assert.equal((await Us.addressesFor("u2")).length, 0); assert.equal((await O.ordersForUser("u1")).length, 1);
+  store.data.paymentTransactions = { t1: { orderId: "o1" } }; assert.equal((await Pay.transactionsForOrder("o1")).length, 1); });
+console.log(pass + " stage-3 checks passed");
